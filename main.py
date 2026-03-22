@@ -19,6 +19,8 @@ SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 NOTION_CLIENT_ID = os.environ["NOTION_CLIENT_ID"]
 NOTION_CLIENT_SECRET = os.environ["NOTION_CLIENT_SECRET"]
+SLACK_CLIENT_ID = os.environ["SLACK_CLIENT_ID"]
+SLACK_CLIENT_SECRET = os.environ["SLACK_CLIENT_SECRET"]
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
@@ -72,6 +74,37 @@ async def exchange(req: ExchangeRequest):
     return {"success": True}
 
 
+@app.post("/exchange-slack")
+async def exchange_slack(req: ExchangeRequest):
+    """Exchange Slack OAuth code for user token, save to Supabase."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://slack.com/api/oauth.v2.access",
+            data={
+                "client_id": SLACK_CLIENT_ID,
+                "client_secret": SLACK_CLIENT_SECRET,
+                "code": req.code,
+                "redirect_uri": req.redirect_uri,
+            },
+        )
+
+    data = resp.json()
+    if not data.get("ok"):
+        raise HTTPException(status_code=400, detail=f"Slack token exchange failed: {data.get('error')}")
+
+    # Extract user token (not bot token)
+    access_token = data["authed_user"]["access_token"]
+
+    supabase.table("connectors").delete().eq("user_id", "test-user").eq("tool_name", "slack").execute()
+    supabase.table("connectors").insert({
+        "user_id": "test-user",
+        "tool_name": "slack",
+        "access_token": access_token,
+    }).execute()
+
+    return {"success": True}
+
+
 @app.post("/run")
 async def run(req: RunRequest):
     """Read Notion token from Supabase, fetch context, run Claude, return output."""
@@ -92,21 +125,37 @@ async def run(req: RunRequest):
 
     notion_token = result.data[0]["access_token"]
 
-    # Fetch context from Notion
+    # Fetch Notion context
     notion_context = await get_notion_context(notion_token, req.task)
 
-    # Run Claude with context + user's Anthropic key
+    # Fetch Slack context if connected
+    slack_result = (
+        supabase.table("connectors")
+        .select("access_token")
+        .eq("user_id", req.user_id)
+        .eq("tool_name", "slack")
+        .execute()
+    )
+    slack_context = ""
+    if slack_result.data:
+        slack_context = await get_slack_context(slack_result.data[0]["access_token"], req.task)
+
+    # Build prompt
+    context_parts = [f"Notion context:\n{notion_context}"]
+    if slack_context:
+        context_parts.append(f"Slack context:\n{slack_context}")
+    context_parts.append(f"Task: {req.task}")
+    prompt = "\n\n".join(context_parts)
+
+    # Run Claude
     claude = anthropic.Anthropic(api_key=req.anthropic_key)
     message = claude.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=2048,
-        messages=[{
-            "role": "user",
-            "content": f"Here is context from Notion:\n\n{notion_context}\n\nTask: {req.task}"
-        }]
+        messages=[{"role": "user", "content": prompt}]
     )
 
-    return {"output": message.content[0].text, "notion_context": notion_context}
+    return {"output": message.content[0].text, "notion_context": notion_context, "slack_context": slack_context}
 
 
 async def get_notion_context(token: str, task: str) -> str:
@@ -150,3 +199,32 @@ async def get_notion_context(token: str, task: str) -> str:
         lines.append(f"- {title}: {url}")
 
     return "Relevant Notion pages:\n" + "\n".join(lines)
+
+
+async def get_slack_context(token: str, task: str) -> str:
+    """Search Slack messages via Web API."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            "https://slack.com/api/search.messages",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"query": task, "count": 5},
+        )
+
+    if resp.status_code != 200:
+        return f"[Slack API error: {resp.status_code}]"
+
+    data = resp.json()
+    if not data.get("ok"):
+        return f"[Slack search error: {data.get('error')}]"
+
+    matches = data.get("messages", {}).get("matches", [])
+    if not matches:
+        return "No relevant Slack messages found."
+
+    lines = []
+    for msg in matches:
+        channel = msg.get("channel", {}).get("name", "unknown")
+        text = msg.get("text", "")[:200]
+        lines.append(f"- #{channel}: {text}")
+
+    return "Relevant Slack messages:\n" + "\n".join(lines)
