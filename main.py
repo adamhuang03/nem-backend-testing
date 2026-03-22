@@ -143,11 +143,9 @@ async def run(req: RunRequest):
     mcp_servers = {}
     if "notion" in connectors:
         mcp_servers["notion"] = {
-            "command": "npx",
-            "args": ["-y", "@notionhq/notion-mcp-server"],
-            "env": {
-                "OPENAPI_MCP_HEADERS": f'{{"Authorization": "Bearer {connectors["notion"]}", "Notion-Version": "2022-06-28"}}'
-            },
+            "type": "http",
+            "url": "https://mcp.notion.com/mcp",
+            "headers": {"Authorization": f"Bearer {connectors['notion']}"},
         }
     if "slack" in connectors:
         mcp_servers["slack"] = {

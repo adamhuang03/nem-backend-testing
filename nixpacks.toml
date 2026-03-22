@@ -2,4 +2,4 @@
 nixPkgs = ["nodejs_20"]
 
 [phases.build]
-cmds = ["npm install -g @anthropic-ai/claude-code"]
+cmds = ["npm install -g @anthropic-ai/claude-code @modelcontextprotocol/server-slack"]
