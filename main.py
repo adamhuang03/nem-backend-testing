@@ -46,6 +46,21 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/test-notion")
+async def test_notion(user_id: str = "test-user"):
+    """Test Notion token validity via users/me."""
+    result = supabase.table("connectors").select("access_token").eq("user_id", user_id).eq("tool_name", "notion").execute()
+    if not result.data:
+        return {"error": "No Notion token found"}
+    token = result.data[0]["access_token"]
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            "https://api.notion.com/v1/users/me",
+            headers={"Authorization": f"Bearer {token}", "Notion-Version": "2022-06-28"},
+        )
+    return {"status": resp.status_code, "body": resp.json()}
+
+
 @app.get("/test-slack")
 async def test_slack(user_id: str = "test-user"):
     """Test Slack token validity via auth.test."""
