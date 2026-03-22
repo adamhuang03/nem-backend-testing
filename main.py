@@ -1,16 +1,17 @@
+import asyncio
 import os
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import create_client
-import anthropic
+from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten for production
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -30,15 +31,37 @@ class ExchangeRequest(BaseModel):
     redirect_uri: str
 
 
+class StoreKeyRequest(BaseModel):
+    anthropic_key: str
+    user_id: str = "test-user"
+
+
 class RunRequest(BaseModel):
     task: str
-    anthropic_key: str
     user_id: str = "test-user"
 
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.post("/store-key")
+async def store_key(req: StoreKeyRequest):
+    """Store user's Anthropic API key in Supabase."""
+    supabase.table("connectors").delete().eq("user_id", req.user_id).eq("tool_name", "anthropic").execute()
+    supabase.table("connectors").insert({
+        "user_id": req.user_id,
+        "tool_name": "anthropic",
+        "access_token": req.anthropic_key,
+    }).execute()
+    return {"success": True}
+
+
+@app.get("/connectors")
+async def connectors(user_id: str = "test-user"):
+    result = supabase.table("connectors").select("tool_name").eq("user_id", user_id).execute()
+    return {"connected": [row["tool_name"] for row in result.data]}
 
 
 @app.post("/exchange")
@@ -63,7 +86,6 @@ async def exchange(req: ExchangeRequest):
 
     access_token = resp.json()["access_token"]
 
-    # Delete any existing connector for this user+tool, then insert fresh
     supabase.table("connectors").delete().eq("user_id", "test-user").eq("tool_name", "notion").execute()
     supabase.table("connectors").insert({
         "user_id": "test-user",
@@ -92,7 +114,6 @@ async def exchange_slack(req: ExchangeRequest):
     if not data.get("ok"):
         raise HTTPException(status_code=400, detail=f"Slack token exchange failed: {data.get('error')}")
 
-    # Extract user token (not bot token)
     access_token = data["authed_user"]["access_token"]
 
     supabase.table("connectors").delete().eq("user_id", "test-user").eq("tool_name", "slack").execute()
@@ -107,124 +128,46 @@ async def exchange_slack(req: ExchangeRequest):
 
 @app.post("/run")
 async def run(req: RunRequest):
-    """Read Notion token from Supabase, fetch context, run Claude, return output."""
-    # Get token from Supabase
-    result = (
-        supabase.table("connectors")
-        .select("access_token")
-        .eq("user_id", req.user_id)
-        .eq("tool_name", "notion")
-        .execute()
-    )
+    """Fetch user connectors from Supabase, build MCP config, run Agent SDK."""
+    result = supabase.table("connectors").select("tool_name, access_token").eq("user_id", req.user_id).execute()
+    connectors = {row["tool_name"]: row["access_token"] for row in result.data}
 
-    if not result.data:
-        raise HTTPException(
-            status_code=404,
-            detail="No Notion token found. Connect Notion first."
-        )
+    if "anthropic" not in connectors:
+        raise HTTPException(status_code=400, detail="No Anthropic key found. Save your API key first.")
 
-    notion_token = result.data[0]["access_token"]
+    os.environ["ANTHROPIC_API_KEY"] = connectors["anthropic"]
 
-    # Fetch Notion context
-    notion_context = await get_notion_context(notion_token, req.task)
+    if not any(k in connectors for k in ["notion", "slack"]):
+        raise HTTPException(status_code=404, detail="No connectors found. Connect a tool first.")
 
-    # Fetch Slack context if connected
-    slack_result = (
-        supabase.table("connectors")
-        .select("access_token")
-        .eq("user_id", req.user_id)
-        .eq("tool_name", "slack")
-        .execute()
-    )
-    slack_context = ""
-    if slack_result.data:
-        slack_context = await get_slack_context(slack_result.data[0]["access_token"], req.task)
-
-    # Build prompt
-    context_parts = [f"Notion context:\n{notion_context}"]
-    if slack_context:
-        context_parts.append(f"Slack context:\n{slack_context}")
-    context_parts.append(f"Task: {req.task}")
-    prompt = "\n\n".join(context_parts)
-
-    # Run Claude
-    claude = anthropic.Anthropic(api_key=req.anthropic_key)
-    message = claude.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=2048,
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    return {"output": message.content[0].text, "notion_context": notion_context, "slack_context": slack_context}
-
-
-async def get_notion_context(token: str, task: str) -> str:
-    """Search Notion via REST API and return a summary of relevant pages."""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            "https://api.notion.com/v1/search",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Notion-Version": "2022-06-28",
-                "Content-Type": "application/json",
+    mcp_servers = {}
+    if "notion" in connectors:
+        mcp_servers["notion"] = {
+            "command": "npx",
+            "args": ["-y", "@notionhq/notion-mcp-server"],
+            "env": {
+                "OPENAPI_MCP_HEADERS": f'{{"Authorization": "Bearer {connectors["notion"]}", "Notion-Version": "2022-06-28"}}'
             },
-            json={"query": task, "page_size": 5},
-        )
+        }
+    if "slack" in connectors:
+        mcp_servers["slack"] = {
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-slack"],
+            "env": {"SLACK_BOT_TOKEN": connectors["slack"]},
+        }
 
-    if resp.status_code != 200:
-        return f"[Notion API error: {resp.status_code} — {resp.text[:300]}]"
+    options = ClaudeAgentOptions(
+        mcp_servers=mcp_servers,
+        allowed_tools=[f"mcp__{name}__*" for name in mcp_servers],
+        permission_mode="bypassPermissions",
+    )
 
-    results = resp.json().get("results", [])
-    if not results:
-        return "No relevant Notion pages found."
+    output = ""
+    async for msg in query(
+        prompt=f"Using the connected tools, find relevant context for this task and answer it: {req.task}",
+        options=options,
+    ):
+        if isinstance(msg, ResultMessage):
+            output = msg.result
 
-    lines = []
-    for page in results:
-        # Extract title
-        title = "Untitled"
-        props = page.get("properties", {})
-        for prop in props.values():
-            if prop.get("type") == "title":
-                arr = prop.get("title", [])
-                if arr:
-                    title = arr[0].get("plain_text", "Untitled")
-                    break
-        # Databases have title at top level
-        if title == "Untitled" and page.get("object") == "database":
-            db_title = page.get("title", [])
-            if db_title:
-                title = db_title[0].get("plain_text", "Untitled")
-
-        url = page.get("url", "")
-        lines.append(f"- {title}: {url}")
-
-    return "Relevant Notion pages:\n" + "\n".join(lines)
-
-
-async def get_slack_context(token: str, task: str) -> str:
-    """Search Slack messages via Web API."""
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            "https://slack.com/api/search.messages",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"query": task, "count": 5},
-        )
-
-    if resp.status_code != 200:
-        return f"[Slack API error: {resp.status_code}]"
-
-    data = resp.json()
-    if not data.get("ok"):
-        return f"[Slack search error: {data.get('error')}]"
-
-    matches = data.get("messages", {}).get("matches", [])
-    if not matches:
-        return "No relevant Slack messages found."
-
-    lines = []
-    for msg in matches:
-        channel = msg.get("channel", {}).get("name", "unknown")
-        text = msg.get("text", "")[:200]
-        lines.append(f"- #{channel}: {text}")
-
-    return "Relevant Slack messages:\n" + "\n".join(lines)
+    return {"output": output, "connected": list(connectors.keys())}
