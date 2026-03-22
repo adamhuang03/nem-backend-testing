@@ -129,8 +129,11 @@ async def exchange_slack(req: ExchangeRequest):
 @app.post("/run")
 async def run(req: RunRequest):
     """Fetch user connectors from Supabase, build MCP config, run Agent SDK."""
+    print(f"[run] user_id={req.user_id}", flush=True)
+
     result = supabase.table("connectors").select("tool_name, access_token").eq("user_id", req.user_id).execute()
     connectors = {row["tool_name"]: row["access_token"] for row in result.data}
+    print(f"[run] connectors found: {list(connectors.keys())}", flush=True)
 
     if "anthropic" not in connectors:
         raise HTTPException(status_code=400, detail="No Anthropic key found. Save your API key first.")
@@ -154,6 +157,9 @@ async def run(req: RunRequest):
             "env": {"SLACK_BOT_TOKEN": connectors["slack"]},
         }
 
+    print(f"[run] mcp_servers configured: {list(mcp_servers.keys())}", flush=True)
+    print(f"[run] allowed_tools: {[f'mcp__{name}__*' for name in mcp_servers]}", flush=True)
+
     options = ClaudeAgentOptions(
         mcp_servers=mcp_servers,
         allowed_tools=[f"mcp__{name}__*" for name in mcp_servers],
@@ -161,11 +167,15 @@ async def run(req: RunRequest):
     )
 
     output = ""
+    msg_count = 0
     async for msg in query(
         prompt=f"Using the connected tools, find relevant context for this task and answer it: {req.task}",
         options=options,
     ):
+        msg_count += 1
+        print(f"[run] msg #{msg_count} type={type(msg).__name__}: {str(msg)[:200]}", flush=True)
         if isinstance(msg, ResultMessage):
             output = msg.result
 
+    print(f"[run] done. total messages={msg_count}", flush=True)
     return {"output": output, "connected": list(connectors.keys())}
