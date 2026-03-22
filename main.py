@@ -159,7 +159,7 @@ async def run(req: RunRequest):
     options = ClaudeAgentOptions(
         mcp_servers=mcp_servers,
         allowed_tools=[f"mcp__{name}__*" for name in mcp_servers],
-        permission_mode="bypassPermissions",
+        permission_mode="acceptEdits",
     )
 
     output = ""
