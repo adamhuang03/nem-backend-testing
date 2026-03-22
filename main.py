@@ -46,6 +46,26 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/test-notion")
+async def test_notion(user_id: str = "test-user"):
+    """Test Notion MCP token by hitting the HTTP MCP endpoint directly."""
+    result = supabase.table("connectors").select("access_token").eq("user_id", user_id).eq("tool_name", "notion").execute()
+    if not result.data:
+        return {"error": "No Notion token found"}
+    token = result.data[0]["access_token"]
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://mcp.notion.com/mcp",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={"jsonrpc": "2.0", "method": "tools/list", "id": 1},
+            timeout=10,
+        )
+    return {"status": resp.status_code, "body": resp.text[:500]}
+
+
 @app.post("/store-key")
 async def store_key(req: StoreKeyRequest):
     """Store user's Anthropic API key in Supabase."""
@@ -173,7 +193,7 @@ async def run(req: RunRequest):
         options=options,
     ):
         msg_count += 1
-        print(f"[run] msg #{msg_count} type={type(msg).__name__}: {str(msg)[:200]}", flush=True)
+        print(f"[run] msg #{msg_count} type={type(msg).__name__}: {str(msg)[:1000]}", flush=True)
         if isinstance(msg, ResultMessage):
             output = msg.result
 
