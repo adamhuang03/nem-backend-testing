@@ -46,24 +46,19 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/test-notion")
-async def test_notion(user_id: str = "test-user"):
-    """Test Notion MCP token by hitting the HTTP MCP endpoint directly."""
-    result = supabase.table("connectors").select("access_token").eq("user_id", user_id).eq("tool_name", "notion").execute()
+@app.get("/test-slack")
+async def test_slack(user_id: str = "test-user"):
+    """Test Slack token validity via auth.test."""
+    result = supabase.table("connectors").select("access_token").eq("user_id", user_id).eq("tool_name", "slack").execute()
     if not result.data:
-        return {"error": "No Notion token found"}
+        return {"error": "No Slack token found"}
     token = result.data[0]["access_token"]
     async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            "https://mcp.notion.com/mcp",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-            json={"jsonrpc": "2.0", "method": "tools/list", "id": 1},
-            timeout=10,
+        resp = await client.get(
+            "https://slack.com/api/auth.test",
+            headers={"Authorization": f"Bearer {token}"},
         )
-    return {"status": resp.status_code, "body": resp.text[:500]}
+    return {"status": resp.status_code, "body": resp.json()}
 
 
 @app.post("/store-key")
@@ -166,15 +161,17 @@ async def run(req: RunRequest):
     mcp_servers = {}
     if "notion" in connectors:
         mcp_servers["notion"] = {
-            "type": "http",
-            "url": "https://mcp.notion.com/mcp",
-            "headers": {"Authorization": f"Bearer {connectors['notion']}"},
+            "command": "npx",
+            "args": ["-y", "@notionhq/notion-mcp-server"],
+            "env": {
+                "OPENAPI_MCP_HEADERS": f'{{"Authorization": "Bearer {connectors["notion"]}", "Notion-Version": "2022-06-28"}}'
+            },
         }
     if "slack" in connectors:
         mcp_servers["slack"] = {
             "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-slack"],
-            "env": {"SLACK_BOT_TOKEN": connectors["slack"]},
+            "args": ["-y", "slack-mcp-server"],
+            "env": {"SLACK_MCP_XOXP_TOKEN": connectors["slack"]},
         }
 
     print(f"[run] mcp_servers configured: {list(mcp_servers.keys())}", flush=True)
