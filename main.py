@@ -1,7 +1,8 @@
 import asyncio
 import os
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import create_client
@@ -10,6 +11,16 @@ from mcp.server.fastmcp import FastMCP
 
 app = FastAPI()
 mcp = FastMCP("nem")
+
+NEM_API_KEY = os.environ.get("NEM_API_KEY", "")
+
+@app.middleware("http")
+async def mcp_auth(request: Request, call_next):
+    if request.url.path.startswith("/mcp"):
+        auth = request.headers.get("authorization", "")
+        if not NEM_API_KEY or auth != f"Bearer {NEM_API_KEY}":
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    return await call_next(request)
 
 app.add_middleware(
     CORSMiddleware,
