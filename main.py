@@ -9,9 +9,10 @@ from supabase import create_client
 from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
 from mcp.server.fastmcp import FastMCP
 
-app = FastAPI()
 RAILWAY_PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "localhost")
 mcp = FastMCP("nem", host=RAILWAY_PUBLIC_DOMAIN)
+mcp_app = mcp.http_app(path="/")
+app = FastAPI(lifespan=mcp_app.lifespan)
 
 NEM_API_KEY = os.environ.get("NEM_API_KEY", "nem-test-token")
 RAILWAY_URL = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "nem-backend-testing-production.up.railway.app")
@@ -346,4 +347,4 @@ async def nem_run(task: str) -> str:
     return output
 
 
-app.mount("/mcp/", mcp.streamable_http_app())
+app.mount("/mcp", mcp_app)
