@@ -11,8 +11,7 @@ from mcp.server.fastmcp import FastMCP
 
 RAILWAY_PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "localhost")
 mcp = FastMCP("nem", host=RAILWAY_PUBLIC_DOMAIN)
-mcp_app = mcp.streamable_http_app()
-app = FastAPI(lifespan=mcp_app.lifespan)
+app = FastAPI()
 
 NEM_API_KEY = os.environ.get("NEM_API_KEY", "nem-test-token")
 RAILWAY_URL = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "nem-backend-testing-production.up.railway.app")
@@ -347,4 +346,4 @@ async def nem_run(task: str) -> str:
     return output
 
 
-app.mount("/mcp", mcp_app)
+app.mount("/mcp", mcp.sse_app())
