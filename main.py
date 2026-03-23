@@ -23,8 +23,18 @@ async def mcp_auth(request: Request, call_next):
     if request.url.path.startswith("/mcp"):
         auth = request.headers.get("authorization", "")
         if auth != f"Bearer {NEM_API_KEY}":
+            print(f"[mcp] 401 unauthorized path={request.url.path}", flush=True)
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    return await call_next(request)
+        print(f"[mcp] {request.method} {request.url.path} query={dict(request.query_params)}", flush=True)
+    response = await call_next(request)
+    if request.url.path.startswith("/mcp"):
+        print(f"[mcp] response status={response.status_code} path={request.url.path}", flush=True)
+    return response
+
+
+@app.on_event("startup")
+async def startup():
+    print(f"[startup] host={RAILWAY_PUBLIC_DOMAIN} base_url={BASE_URL} nem_api_key_set={'yes' if NEM_API_KEY != 'nem-test-token' else 'default'}", flush=True)
 
 
 @app.get("/.well-known/oauth-protected-resource")
