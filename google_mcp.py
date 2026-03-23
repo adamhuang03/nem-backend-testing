@@ -35,7 +35,7 @@ async def gmail_search(query: str, max_results: int = 10) -> str:
         )
     data = resp.json()
     if "messages" not in data:
-        return json.dumps({"results": [], "query": query})
+        return json.dumps({"error": data, "query": query})
     messages = []
     async with httpx.AsyncClient() as client:
         for msg in data["messages"][:10]:
@@ -100,7 +100,10 @@ async def sheets_list_files(query: str = "") -> str:
             headers={"Authorization": f"Bearer {token}"},
             params={"q": q, "fields": "files(id,name,modifiedTime)", "pageSize": 20},
         )
-    return json.dumps(resp.json().get("files", []), indent=2)
+    data = resp.json()
+    if "files" not in data:
+        return json.dumps({"error": data})
+    return json.dumps(data["files"], indent=2)
 
 
 @mcp.tool()
