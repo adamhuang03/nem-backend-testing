@@ -105,6 +105,8 @@ NOTION_CLIENT_ID = os.environ["NOTION_CLIENT_ID"]
 NOTION_CLIENT_SECRET = os.environ["NOTION_CLIENT_SECRET"]
 SLACK_CLIENT_ID = os.environ["SLACK_CLIENT_ID"]
 SLACK_CLIENT_SECRET = os.environ["SLACK_CLIENT_SECRET"]
+GOOGLE_CLIENT_ID = os.environ["GOOGLE_APP_CLIENT_ID"]
+GOOGLE_CLIENT_SECRET = os.environ["GOOGLE_APP_CLIENT_SECRET"]
 
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
@@ -239,6 +241,55 @@ async def exchange_slack(req: ExchangeRequest):
     return {"success": True}
 
 
+@app.post("/exchange-google")
+async def exchange_google(req: ExchangeRequest):
+    """Exchange Google OAuth code for refresh token, save to Supabase."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "code": req.code,
+                "redirect_uri": req.redirect_uri,
+                "grant_type": "authorization_code",
+            },
+        )
+
+    data = resp.json()
+    if "refresh_token" not in data:
+        raise HTTPException(status_code=400, detail=f"Google token exchange failed: {data}")
+
+    supabase.table("connectors").delete().eq("user_id", "test-user").eq("tool_name", "google").execute()
+    supabase.table("connectors").insert({
+        "user_id": "test-user",
+        "tool_name": "google",
+        "access_token": data["refresh_token"],
+    }).execute()
+
+    return {"success": True}
+
+
+@app.get("/test-google")
+async def test_google(user_id: str = "test-user"):
+    """Test Google token validity by exchanging refresh token for access token."""
+    result = supabase.table("connectors").select("access_token").eq("user_id", user_id).eq("tool_name", "google").execute()
+    if not result.data:
+        return {"error": "No Google token found"}
+    refresh_token = result.data[0]["access_token"]
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+            },
+        )
+    return {"status": resp.status_code, "body": resp.json()}
+
+
 @app.post("/run")
 async def run(req: RunRequest):
     """Fetch user connectors from Supabase, build MCP config, run Agent SDK."""
@@ -253,7 +304,7 @@ async def run(req: RunRequest):
 
     os.environ["ANTHROPIC_API_KEY"] = connectors["anthropic"]
 
-    if not any(k in connectors for k in ["notion", "slack"]):
+    if not any(k in connectors for k in ["notion", "slack", "google"]):
         raise HTTPException(status_code=404, detail="No connectors found. Connect a tool first.")
 
     mcp_servers = {}
@@ -270,6 +321,16 @@ async def run(req: RunRequest):
             "command": "npx",
             "args": ["-y", "slack-mcp-server"],
             "env": {"SLACK_MCP_XOXP_TOKEN": connectors["slack"]},
+        }
+    if "google" in connectors:
+        mcp_servers["google"] = {
+            "command": "npx",
+            "args": ["-y", "@presto-ai/google-workspace-mcp"],
+            "env": {
+                "GOOGLE_WORKSPACE_CLIENT_ID": GOOGLE_CLIENT_ID,
+                "GOOGLE_WORKSPACE_CLIENT_SECRET": GOOGLE_CLIENT_SECRET,
+                "GOOGLE_WORKSPACE_REFRESH_TOKEN": connectors["google"],
+            },
         }
 
     print(f"[run] mcp_servers configured: {list(mcp_servers.keys())}", flush=True)
@@ -310,7 +371,7 @@ async def nem_run(task: str) -> str:
         return "Error: No Anthropic key found. Save your key at trynem.vercel.app/testing."
     os.environ["ANTHROPIC_API_KEY"] = connectors["anthropic"]
 
-    if not any(k in connectors for k in ["notion", "slack"]):
+    if not any(k in connectors for k in ["notion", "slack", "google"]):
         return "Error: No connectors found. Connect a tool first at trynem.vercel.app/testing."
 
     mcp_servers = {}
@@ -327,6 +388,16 @@ async def nem_run(task: str) -> str:
             "command": "npx",
             "args": ["-y", "slack-mcp-server"],
             "env": {"SLACK_MCP_XOXP_TOKEN": connectors["slack"]},
+        }
+    if "google" in connectors:
+        mcp_servers["google"] = {
+            "command": "npx",
+            "args": ["-y", "@presto-ai/google-workspace-mcp"],
+            "env": {
+                "GOOGLE_WORKSPACE_CLIENT_ID": GOOGLE_CLIENT_ID,
+                "GOOGLE_WORKSPACE_CLIENT_SECRET": GOOGLE_CLIENT_SECRET,
+                "GOOGLE_WORKSPACE_REFRESH_TOKEN": connectors["google"],
+            },
         }
 
     options = ClaudeAgentOptions(
