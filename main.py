@@ -12,15 +12,51 @@ from mcp.server.fastmcp import FastMCP
 app = FastAPI()
 mcp = FastMCP("nem")
 
-NEM_API_KEY = os.environ.get("NEM_API_KEY", "")
+NEM_API_KEY = os.environ.get("NEM_API_KEY", "nem-test-token")
+RAILWAY_URL = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "nem-backend-testing-production.up.railway.app")
+BASE_URL = f"https://{RAILWAY_URL}"
+
 
 @app.middleware("http")
 async def mcp_auth(request: Request, call_next):
     if request.url.path.startswith("/mcp"):
         auth = request.headers.get("authorization", "")
-        if not NEM_API_KEY or auth != f"Bearer {NEM_API_KEY}":
+        if auth != f"Bearer {NEM_API_KEY}":
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
     return await call_next(request)
+
+
+@app.get("/.well-known/oauth-authorization-server")
+def oauth_metadata():
+    return {
+        "issuer": BASE_URL,
+        "authorization_endpoint": f"{BASE_URL}/oauth/authorize",
+        "token_endpoint": f"{BASE_URL}/oauth/token",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "client_credentials"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+    }
+
+
+@app.post("/oauth/token")
+async def oauth_token(request: Request):
+    """Issue token — accepts client_credentials without verification for testing."""
+    return {
+        "access_token": NEM_API_KEY,
+        "token_type": "Bearer",
+        "expires_in": 86400,
+    }
+
+
+@app.get("/oauth/authorize")
+async def oauth_authorize(request: Request):
+    """Redirect back with auth code immediately (open for testing)."""
+    redirect_uri = request.query_params.get("redirect_uri", "")
+    state = request.query_params.get("state", "")
+    code = "nem-auth-code"
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=f"{redirect_uri}?code={code}&state={state}")
 
 app.add_middleware(
     CORSMiddleware,
