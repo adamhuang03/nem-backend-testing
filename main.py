@@ -1,6 +1,9 @@
 import asyncio
 import os
+import re
+import json
 import httpx
+import anthropic as _anthropic
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -101,6 +104,7 @@ app.add_middleware(
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
+PROFILE_ID = "f9893af7-ea34-441c-98e5-9672be957423"
 NOTION_CLIENT_ID = os.environ["NOTION_CLIENT_ID"]
 NOTION_CLIENT_SECRET = os.environ["NOTION_CLIENT_SECRET"]
 SLACK_CLIENT_ID = os.environ["SLACK_CLIENT_ID"]
@@ -290,31 +294,25 @@ async def test_google(user_id: str = "test-user"):
     return {"status": resp.status_code, "body": resp.json()}
 
 
-@app.post("/run")
-async def run(req: RunRequest):
-    """Fetch user connectors from Supabase, build MCP config, run Agent SDK."""
-    print(f"[run] user_id={req.user_id}", flush=True)
+@app.get("/role")
+async def get_role():
+    profile = supabase.table("profiles").select("role").eq("id", PROFILE_ID).execute()
+    return {"role": profile.data[0]["role"] if profile.data else None}
 
-    result = supabase.table("connectors").select("tool_name, access_token").eq("user_id", req.user_id).execute()
-    connectors = {row["tool_name"]: row["access_token"] for row in result.data}
-    print(f"[run] connectors found: {list(connectors.keys())}", flush=True)
 
-    if "anthropic" not in connectors:
-        raise HTTPException(status_code=400, detail="No Anthropic key found. Save your API key first.")
+@app.post("/set-role")
+async def set_role(role: str):
+    supabase.table("profiles").update({"role": role}).eq("id", PROFILE_ID).execute()
+    return {"role": role}
 
-    os.environ["ANTHROPIC_API_KEY"] = connectors["anthropic"]
 
-    if not any(k in connectors for k in ["notion", "slack", "google"]):
-        raise HTTPException(status_code=404, detail="No connectors found. Connect a tool first.")
-
+def _build_mcp_servers(connectors: dict) -> dict:
     mcp_servers = {}
     if "notion" in connectors:
         mcp_servers["notion"] = {
             "command": "npx",
             "args": ["-y", "@notionhq/notion-mcp-server"],
-            "env": {
-                "OPENAPI_MCP_HEADERS": f'{{"Authorization": "Bearer {connectors["notion"]}", "Notion-Version": "2022-06-28"}}'
-            },
+            "env": {"OPENAPI_MCP_HEADERS": f'{{"Authorization": "Bearer {connectors["notion"]}", "Notion-Version": "2022-06-28"}}'},
         }
     if "slack" in connectors:
         mcp_servers["slack"] = {
@@ -332,7 +330,97 @@ async def run(req: RunRequest):
                 "GOOGLE_REFRESH_TOKEN": connectors["google"],
             },
         }
+    return mcp_servers
 
+
+@app.post("/onboard")
+async def onboard():
+    user_id = "test-user"
+    result = supabase.table("connectors").select("tool_name, access_token").eq("user_id", user_id).execute()
+    connectors = {row["tool_name"]: row["access_token"] for row in result.data}
+
+    if "anthropic" not in connectors:
+        raise HTTPException(status_code=400, detail="No Anthropic key found.")
+    os.environ["ANTHROPIC_API_KEY"] = connectors["anthropic"]
+
+    mcp_servers = _build_mcp_servers(connectors)
+    options = ClaudeAgentOptions(
+        mcp_servers=mcp_servers,
+        allowed_tools=[f"mcp__{name}__*" for name in mcp_servers],
+        permission_mode="acceptEdits",
+    )
+
+    role = "professional"
+    async for msg in query(
+        prompt=(
+            "Do a quick, light scan of the connected tools — just glance at surface-level metadata: "
+            "a few Notion page titles, Slack channel names, Gmail subject lines, or Sheets file names. "
+            "Do NOT read full content of anything. One tool call per source is enough. "
+            "Based on what you see, infer what professional role this user likely has. "
+            'Return ONLY a JSON object, no explanation: {"role": "Chief of Staff at a startup"}'
+        ),
+        options=options,
+    ):
+        if isinstance(msg, ResultMessage):
+            match = re.search(r'\{.*?"role".*?\}', msg.result, re.DOTALL)
+            if match:
+                try:
+                    role = json.loads(match.group())["role"]
+                except Exception:
+                    pass
+
+    supabase.table("profiles").update({"role": role}).eq("id", PROFILE_ID).execute()
+    return {"role": role}
+
+
+@app.post("/suggest-tasks")
+async def suggest_tasks(role: str):
+    user_id = "test-user"
+    result = supabase.table("connectors").select("tool_name, access_token").eq("user_id", user_id).execute()
+    connectors = {r["tool_name"]: r["access_token"] for r in result.data}
+    tool_names = [k for k in connectors if k != "anthropic"]
+
+    if "anthropic" not in connectors:
+        raise HTTPException(status_code=400, detail="No Anthropic key found.")
+    os.environ["ANTHROPIC_API_KEY"] = connectors["anthropic"]
+
+    client = _anthropic.Anthropic()
+    msg = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=512,
+        messages=[{"role": "user", "content": (
+            f"The user is a {role} with these tools connected: {', '.join(tool_names)}. "
+            "Suggest 3 tasks that showcase what an AI agent could do FOR them — multi-step workflows that pull context from their connected tools and take real action. "
+            "Good tasks: synthesize info across sources, then produce something useful (drafts, summaries, status updates). "
+            "Bad tasks: single-step lookups or vague overhauls. "
+            "Each task should feel like something a smart assistant would just go do. "
+            "Example for a salesperson: 'Look through my open deals in Notion and draft a personalized follow-up email for each one that hasn't heard from me in 2+ weeks.' "
+            'Return ONLY a JSON array of 3 strings: ["task 1", "task 2", "task 3"]'
+        )}],
+    )
+    match = re.search(r'\[.*?\]', msg.content[0].text, re.DOTALL)
+    tasks = json.loads(match.group()) if match else ["What did I miss this week?", "Summarize my open tasks", "What emails need my attention?"]
+    return {"tasks": tasks}
+
+
+@app.post("/run")
+async def run(req: RunRequest):
+    """Fetch user connectors from Supabase, build MCP config, run Agent SDK."""
+    print(f"[run] user_id={req.user_id}", flush=True)
+
+    result = supabase.table("connectors").select("tool_name, access_token").eq("user_id", req.user_id).execute()
+    connectors = {row["tool_name"]: row["access_token"] for row in result.data}
+    print(f"[run] connectors found: {list(connectors.keys())}", flush=True)
+
+    if "anthropic" not in connectors:
+        raise HTTPException(status_code=400, detail="No Anthropic key found. Save your API key first.")
+
+    os.environ["ANTHROPIC_API_KEY"] = connectors["anthropic"]
+
+    if not any(k in connectors for k in ["notion", "slack", "google"]):
+        raise HTTPException(status_code=404, detail="No connectors found. Connect a tool first.")
+
+    mcp_servers = _build_mcp_servers(connectors)
     print(f"[run] mcp_servers configured: {list(mcp_servers.keys())}", flush=True)
     print(f"[run] allowed_tools: {[f'mcp__{name}__*' for name in mcp_servers]}", flush=True)
 
@@ -374,32 +462,7 @@ async def nem_run(task: str) -> str:
     if not any(k in connectors for k in ["notion", "slack", "google"]):
         return "Error: No connectors found. Connect a tool first at trynem.vercel.app/testing."
 
-    mcp_servers = {}
-    if "notion" in connectors:
-        mcp_servers["notion"] = {
-            "command": "npx",
-            "args": ["-y", "@notionhq/notion-mcp-server"],
-            "env": {
-                "OPENAPI_MCP_HEADERS": f'{{"Authorization": "Bearer {connectors["notion"]}", "Notion-Version": "2022-06-28"}}'
-            },
-        }
-    if "slack" in connectors:
-        mcp_servers["slack"] = {
-            "command": "npx",
-            "args": ["-y", "slack-mcp-server"],
-            "env": {"SLACK_MCP_XOXP_TOKEN": connectors["slack"]},
-        }
-    if "google" in connectors:
-        mcp_servers["google"] = {
-            "command": "python",
-            "args": ["/app/google_mcp.py"],
-            "env": {
-                "GOOGLE_CLIENT_ID": GOOGLE_CLIENT_ID,
-                "GOOGLE_CLIENT_SECRET": GOOGLE_CLIENT_SECRET,
-                "GOOGLE_REFRESH_TOKEN": connectors["google"],
-            },
-        }
-
+    mcp_servers = _build_mcp_servers(connectors)
     options = ClaudeAgentOptions(
         mcp_servers=mcp_servers,
         allowed_tools=[f"mcp__{name}__*" for name in mcp_servers],
