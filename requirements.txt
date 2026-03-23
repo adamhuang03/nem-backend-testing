@@ -5,3 +5,4 @@ supabase
 anthropic
 python-dotenv
 claude_agent_sdk
+mcp

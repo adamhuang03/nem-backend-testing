@@ -6,8 +6,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import create_client
 from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
+from mcp.server.fastmcp import FastMCP
 
 app = FastAPI()
+mcp = FastMCP("nem")
 
 app.add_middleware(
     CORSMiddleware,
@@ -211,3 +213,56 @@ async def run(req: RunRequest):
 
     print(f"[run] done. total messages={msg_count}", flush=True)
     return {"output": output, "connected": list(connectors.keys())}
+
+
+# --- MCP server ---
+
+@mcp.tool()
+async def nem_run(task: str) -> str:
+    """Run a nem task using your connected tools (Notion, Slack). Returns context-aware output."""
+    user_id = "test-user"
+
+    result = supabase.table("connectors").select("tool_name, access_token").eq("user_id", user_id).execute()
+    connectors = {row["tool_name"]: row["access_token"] for row in result.data}
+
+    if "anthropic" not in connectors:
+        return "Error: No Anthropic key found. Save your key at trynem.vercel.app/testing."
+    os.environ["ANTHROPIC_API_KEY"] = connectors["anthropic"]
+
+    if not any(k in connectors for k in ["notion", "slack"]):
+        return "Error: No connectors found. Connect a tool first at trynem.vercel.app/testing."
+
+    mcp_servers = {}
+    if "notion" in connectors:
+        mcp_servers["notion"] = {
+            "command": "npx",
+            "args": ["-y", "@notionhq/notion-mcp-server"],
+            "env": {
+                "OPENAPI_MCP_HEADERS": f'{{"Authorization": "Bearer {connectors["notion"]}", "Notion-Version": "2022-06-28"}}'
+            },
+        }
+    if "slack" in connectors:
+        mcp_servers["slack"] = {
+            "command": "npx",
+            "args": ["-y", "slack-mcp-server"],
+            "env": {"SLACK_MCP_XOXP_TOKEN": connectors["slack"]},
+        }
+
+    options = ClaudeAgentOptions(
+        mcp_servers=mcp_servers,
+        allowed_tools=[f"mcp__{name}__*" for name in mcp_servers],
+        permission_mode="acceptEdits",
+    )
+
+    output = ""
+    async for msg in query(
+        prompt=f"Using the connected tools, find relevant context for this task and answer it: {task}",
+        options=options,
+    ):
+        if isinstance(msg, ResultMessage):
+            output = msg.result
+
+    return output
+
+
+app.mount("/mcp", mcp.sse_app())
