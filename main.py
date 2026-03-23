@@ -45,6 +45,20 @@ def oauth_metadata():
         "grant_types_supported": ["authorization_code", "client_credentials"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],
+        "registration_endpoint": f"{BASE_URL}/oauth/register",
+    }
+
+
+@app.post("/oauth/register")
+async def oauth_register(request: Request):
+    """Dynamic client registration — accepts any client for testing."""
+    body = await request.json()
+    return {
+        "client_id": "nem-client",
+        "client_secret": "nem-client-secret",
+        "client_id_issued_at": 1711000000,
+        "client_secret_expires_at": 0,
+        **body,
     }
 
 
