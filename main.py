@@ -26,6 +26,15 @@ async def mcp_auth(request: Request, call_next):
     return await call_next(request)
 
 
+@app.get("/.well-known/oauth-protected-resource")
+@app.get("/.well-known/oauth-protected-resource/mcp")
+def oauth_protected_resource():
+    return {
+        "resource": BASE_URL,
+        "authorization_servers": [BASE_URL],
+    }
+
+
 @app.get("/.well-known/oauth-authorization-server")
 def oauth_metadata():
     return {
