@@ -10,7 +10,8 @@ from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
 from mcp.server.fastmcp import FastMCP
 
 app = FastAPI()
-mcp = FastMCP("nem")
+RAILWAY_PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "localhost")
+mcp = FastMCP("nem", host=RAILWAY_PUBLIC_DOMAIN)
 
 NEM_API_KEY = os.environ.get("NEM_API_KEY", "nem-test-token")
 RAILWAY_URL = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "nem-backend-testing-production.up.railway.app")
