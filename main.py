@@ -276,4 +276,4 @@ async def nem_run(task: str) -> str:
     return output
 
 
-app.mount("/mcp", mcp.sse_app())
+app.mount("/mcp", mcp.streamable_http_app())
