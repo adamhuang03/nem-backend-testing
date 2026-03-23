@@ -11,7 +11,7 @@ from mcp.server.fastmcp import FastMCP
 
 RAILWAY_PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "localhost")
 mcp = FastMCP("nem", host=RAILWAY_PUBLIC_DOMAIN)
-mcp_app = mcp.http_app(path="/")
+mcp_app = mcp.streamable_http_app()
 app = FastAPI(lifespan=mcp_app.lifespan)
 
 NEM_API_KEY = os.environ.get("NEM_API_KEY", "nem-test-token")
