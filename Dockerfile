@@ -12,7 +12,7 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 # Install claude CLI and Slack MCP server globally
-RUN npm install -g @anthropic-ai/claude-code @notionhq/notion-mcp-server slack-mcp-server @presto-ai/google-workspace-mcp
+RUN npm install -g @anthropic-ai/claude-code @notionhq/notion-mcp-server slack-mcp-server
 
 COPY . .
 

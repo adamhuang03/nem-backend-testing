@@ -324,12 +324,12 @@ async def run(req: RunRequest):
         }
     if "google" in connectors:
         mcp_servers["google"] = {
-            "command": "npx",
-            "args": ["-y", "@presto-ai/google-workspace-mcp"],
+            "command": "python",
+            "args": ["/app/google_mcp.py"],
             "env": {
-                "GOOGLE_WORKSPACE_CLIENT_ID": GOOGLE_CLIENT_ID,
-                "GOOGLE_WORKSPACE_CLIENT_SECRET": GOOGLE_CLIENT_SECRET,
-                "GOOGLE_WORKSPACE_REFRESH_TOKEN": connectors["google"],
+                "GOOGLE_CLIENT_ID": GOOGLE_CLIENT_ID,
+                "GOOGLE_CLIENT_SECRET": GOOGLE_CLIENT_SECRET,
+                "GOOGLE_REFRESH_TOKEN": connectors["google"],
             },
         }
 
@@ -391,12 +391,12 @@ async def nem_run(task: str) -> str:
         }
     if "google" in connectors:
         mcp_servers["google"] = {
-            "command": "npx",
-            "args": ["-y", "@presto-ai/google-workspace-mcp"],
+            "command": "python",
+            "args": ["/app/google_mcp.py"],
             "env": {
-                "GOOGLE_WORKSPACE_CLIENT_ID": GOOGLE_CLIENT_ID,
-                "GOOGLE_WORKSPACE_CLIENT_SECRET": GOOGLE_CLIENT_SECRET,
-                "GOOGLE_WORKSPACE_REFRESH_TOKEN": connectors["google"],
+                "GOOGLE_CLIENT_ID": GOOGLE_CLIENT_ID,
+                "GOOGLE_CLIENT_SECRET": GOOGLE_CLIENT_SECRET,
+                "GOOGLE_REFRESH_TOKEN": connectors["google"],
             },
         }
 
