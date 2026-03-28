@@ -8,7 +8,7 @@ import re
 import time
 from pathlib import Path
 
-from claude_agent_sdk import ClaudeAgent, ClaudeAgentOptions, query, ResultMessage
+from claude_agent_sdk import ClaudeAgentOptions, query, ResultMessage
 
 AGENTS_DIR = Path(__file__).parent / "agents"
 
