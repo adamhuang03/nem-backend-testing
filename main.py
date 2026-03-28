@@ -482,8 +482,8 @@ async def nem_start(task: str) -> dict:
     os.environ["ANTHROPIC_API_KEY"] = connectors["anthropic"]
 
     mcp_options = ClaudeAgentOptions(mcp_servers=mcp_servers,
-        allowed_tools=[f"mcp__{n}__*" for n in mcp_servers], permission_mode="acceptEdits")
-    base_options = ClaudeAgentOptions(allowed_tools=[], permission_mode="acceptEdits")
+        allowed_tools=[f"mcp__{n}__*" for n in mcp_servers], permission_mode="bypassPermissions")
+    base_options = ClaudeAgentOptions(allowed_tools=[], permission_mode="bypassPermissions")
 
     row = supabase.table("runs").insert({"user_id": user_id, "task": task}).execute()
     session_id = row.data[0]["id"]
@@ -547,8 +547,8 @@ async def nem_answer(session_id: str, answers: str) -> dict:
     os.environ["ANTHROPIC_API_KEY"] = connectors["anthropic"]
 
     mcp_options = ClaudeAgentOptions(mcp_servers=mcp_servers,
-        allowed_tools=[f"mcp__{n}__*" for n in mcp_servers], permission_mode="acceptEdits")
-    base_options = ClaudeAgentOptions(allowed_tools=[], permission_mode="acceptEdits")
+        allowed_tools=[f"mcp__{n}__*" for n in mcp_servers], permission_mode="bypassPermissions")
+    base_options = ClaudeAgentOptions(allowed_tools=[], permission_mode="bypassPermissions")
 
     result = await run_answer_pipeline(session_data, answers, mcp_options, base_options)
 
