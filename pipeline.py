@@ -298,10 +298,12 @@ async def run_pipeline(
         final_steps.append(step_out)
 
     final_plan = "\n\n".join(final_steps)
+    thought_log = extract_section(jal2_output, "BEHAVIORAL_PATTERNS")
 
     return {
         "status": "complete",
-        "output": final_plan,
+        "plan": final_plan,
+        "thought_log": thought_log,
         "logs": logs,
         "session_data": None,
     }
@@ -346,9 +348,11 @@ async def run_answer_pipeline(
         final_steps.append(step_out)
 
     final_plan = "\n\n".join(final_steps)
+    thought_log = extract_section(jal2_output, "BEHAVIORAL_PATTERNS")
 
     return {
         "status": "complete",
-        "output": final_plan,
+        "plan": final_plan,
+        "thought_log": thought_log,
         "logs": logs,
     }
