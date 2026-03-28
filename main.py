@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from supabase import create_client
 from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
 from mcp.server.fastmcp import FastMCP
+from pipeline import run_pipeline, run_answer_pipeline
 
 RAILWAY_PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "localhost")
 mcp = FastMCP("nem", host=RAILWAY_PUBLIC_DOMAIN)
@@ -333,6 +334,11 @@ def _build_mcp_servers(connectors: dict) -> dict:
     return mcp_servers
 
 
+def _get_connectors(user_id: str) -> dict:
+    result = supabase.table("connectors").select("tool_name, access_token").eq("user_id", user_id).execute()
+    return {row["tool_name"]: row["access_token"] for row in result.data}
+
+
 @app.post("/onboard")
 async def onboard():
     user_id = "test-user"
@@ -448,36 +454,62 @@ async def run(req: RunRequest):
 # --- MCP server ---
 
 @mcp.tool()
-async def nem_run(task: str) -> str:
-    """Run a nem task using your connected tools (Notion, Slack). Returns context-aware output."""
-    user_id = "test-user"
-
-    result = supabase.table("connectors").select("tool_name, access_token").eq("user_id", user_id).execute()
-    connectors = {row["tool_name"]: row["access_token"] for row in result.data}
-
-    if "anthropic" not in connectors:
-        return "Error: No Anthropic key found. Save your key at trynem.vercel.app/testing."
+async def nem_start(task: str) -> dict:
+    user_id = PROFILE_ID  # Batch 1: hardcoded; Batch 2: resolved from mcp_token
+    connectors = _get_connectors("test-user")  # connectors table still keyed by "test-user"
+    mcp_servers = _build_mcp_servers(connectors)
     os.environ["ANTHROPIC_API_KEY"] = connectors["anthropic"]
 
-    if not any(k in connectors for k in ["notion", "slack", "google"]):
-        return "Error: No connectors found. Connect a tool first at trynem.vercel.app/testing."
+    mcp_options = ClaudeAgentOptions(mcp_servers=mcp_servers,
+        allowed_tools=[f"mcp__{n}__*" for n in mcp_servers], permission_mode="acceptEdits")
+    base_options = ClaudeAgentOptions(allowed_tools=[], permission_mode="acceptEdits")
 
+    row = supabase.table("runs").insert({"user_id": user_id, "task": task}).execute()
+    session_id = row.data[0]["id"]
+
+    result = await run_pipeline(task, mcp_options, base_options)
+
+    supabase.table("runs").update({
+        "status": result["status"],
+        "logs": result["logs"],
+        "session_data": result.get("session_data"),
+        "final_output": result.get("output"),
+    }).eq("id", session_id).execute()
+
+    return {**result, "session_id": session_id}
+
+
+@mcp.tool()
+async def nem_answer(session_id: str, answers: str) -> dict:
+    row = supabase.table("runs").select("session_data, user_id").eq("id", session_id).execute()
+    if not row.data:
+        return {"status": "error", "message": f"Session {session_id} not found."}
+
+    session_data = row.data[0]["session_data"]
+    user_id = row.data[0]["user_id"]
+    connectors = _get_connectors("test-user")  # connectors table still keyed by "test-user"
     mcp_servers = _build_mcp_servers(connectors)
-    options = ClaudeAgentOptions(
-        mcp_servers=mcp_servers,
-        allowed_tools=[f"mcp__{name}__*" for name in mcp_servers],
-        permission_mode="acceptEdits",
-    )
+    os.environ["ANTHROPIC_API_KEY"] = connectors["anthropic"]
 
-    output = ""
-    async for msg in query(
-        prompt=f"Using the connected tools, find relevant context for this task and answer it: {task}",
-        options=options,
-    ):
-        if isinstance(msg, ResultMessage):
-            output = msg.result
+    mcp_options = ClaudeAgentOptions(mcp_servers=mcp_servers,
+        allowed_tools=[f"mcp__{n}__*" for n in mcp_servers], permission_mode="acceptEdits")
+    base_options = ClaudeAgentOptions(allowed_tools=[], permission_mode="acceptEdits")
 
-    return output
+    result = await run_answer_pipeline(session_data, answers, mcp_options, base_options)
+
+    supabase.table("runs").update({
+        "status": result["status"],
+        "logs": result.get("logs", []),
+        "final_output": result.get("output"),
+    }).eq("id", session_id).execute()
+
+    return {**result, "session_id": session_id}
+
+
+@mcp.tool()
+async def nem_review(session_id: str, step_number: int, executed_result: str) -> dict:
+    """Placeholder — not yet implemented."""
+    return {"status": "not_implemented", "message": "Step review coming soon."}
 
 
 app.mount("/mcp", mcp.sse_app())
