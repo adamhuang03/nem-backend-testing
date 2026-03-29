@@ -16,4 +16,7 @@ RUN npm install -g @anthropic-ai/claude-code @notionhq/notion-mcp-server slack-m
 
 COPY . .
 
+RUN useradd -m appuser && chown -R appuser /app
+USER appuser
+
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
