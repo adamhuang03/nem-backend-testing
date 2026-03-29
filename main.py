@@ -14,13 +14,31 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import create_client
 from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
+from contextlib import asynccontextmanager
 from mcp.server.fastmcp import FastMCP
 from pipeline import run_pipeline, run_answer_pipeline
 from contextvars import ContextVar
 
 RAILWAY_PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "localhost")
 mcp = FastMCP("nem", host=RAILWAY_PUBLIC_DOMAIN)
-app = FastAPI()
+
+mcp_test = FastMCP("nem_test")
+
+@mcp_test.tool()
+async def nem_test(minutes: float) -> str:
+    """Wait for the given number of minutes then return — tests whether streamable-http holds long-running connections."""
+    await asyncio.sleep(minutes * 60)
+    return f"Connection held for {minutes} minute(s). Streamable HTTP is working."
+
+mcp_test_app = mcp_test.streamable_http_app()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print(f"[startup] host={RAILWAY_PUBLIC_DOMAIN} base_url={BASE_URL} nem_api_key_set={'yes' if NEM_API_KEY != 'nem-test-token' else 'default'}", flush=True)
+    async with mcp_test_app.router.lifespan_context(mcp_test_app):
+        yield
+
+app = FastAPI(lifespan=lifespan)
 
 NEM_API_KEY = os.environ.get("NEM_API_KEY", "nem-test-token")
 RAILWAY_URL = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "nem-backend-testing-production.up.railway.app")
@@ -59,10 +77,6 @@ class MCPAuthMiddleware:
             return
         await self.app(scope, receive, send)
 
-
-@app.on_event("startup")
-async def startup():
-    print(f"[startup] host={RAILWAY_PUBLIC_DOMAIN} base_url={BASE_URL} nem_api_key_set={'yes' if NEM_API_KEY != 'nem-test-token' else 'default'}", flush=True)
 
 
 @app.get("/.well-known/oauth-protected-resource")
@@ -679,16 +693,4 @@ async def nem_review(session_id: str, step_number: int, executed_result: str) ->
 
 app.mount("/mcp", mcp.sse_app())
 
-# ---------------------------------------------------------------------------
-# nem_test — streamable HTTP transport for connection durability testing
-# ---------------------------------------------------------------------------
-
-mcp_test = FastMCP("nem_test")
-
-@mcp_test.tool()
-async def nem_test(minutes: float) -> str:
-    """Wait for the given number of minutes then return — tests whether streamable-http holds long-running connections."""
-    await asyncio.sleep(minutes * 60)
-    return f"Connection held for {minutes} minute(s). Streamable HTTP is working."
-
-app.mount("/mcp_test", mcp_test.streamable_http_app())
+app.mount("/mcp_test", mcp_test_app)
