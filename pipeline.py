@@ -182,6 +182,7 @@ async def run_pipeline(
     task: str,
     mcp_options,  # ClaudeAgentOptions
     base_options,  # ClaudeAgentOptions
+    on_log=None,  # optional async callback(logs) — called after each step to flush incrementally
 ) -> dict:
     """
     Returns {status, output, logs, session_data}
@@ -195,6 +196,7 @@ async def run_pipeline(
     start = time.time()
     jal0_output = await run_agent("jal_0.md", task, mcp_options)
     _log(logs, "jal_0", task, jal0_output, start)
+    if on_log: await on_log(logs)
 
     if "Missing connector:" in jal0_output:
         return {
@@ -232,6 +234,7 @@ async def run_pipeline(
 
     _log(logs, "bal_mode1", task, bal_output, bal_start)
     _log(logs, "jal_2", task, jal2_output, jal2_start)
+    if on_log: await on_log(logs)
 
     # Questions gate: VAL resolves context questions, behavioral questions go to user
     behavioral_qs = parse_behavioral_questions(jal2_output)
@@ -246,6 +249,7 @@ async def run_pipeline(
         )
         for i, (q, result) in enumerate(zip(context_qs, val_results)):
             _log(logs, f"val_{i}", q, str(result), val_starts[i])
+        if on_log: await on_log(logs)
     else:
         val_results = []
 
@@ -280,6 +284,7 @@ async def run_pipeline(
     shaper_start = time.time()
     shaped_plan = await run_shaper(task, bal_output, jal2_output, base_options)
     _log(logs, "shaper", f"{task[:250]}", shaped_plan, shaper_start)
+    if on_log: await on_log(logs)
 
     # Step 5: BAL Mode 3 flush × N — pure reasoning, no MCP
     actions = parse_steps(shaped_plan)
@@ -296,6 +301,7 @@ async def run_pipeline(
         step_out = result if not isinstance(result, Exception) else f"**Step {i + 1}**\n{actions[i]}"
         _log(logs, f"flush_{i}", actions[i], str(step_out), flush_starts[i])
         final_steps.append(step_out)
+    if on_log: await on_log(logs)
 
     final_plan = "\n\n".join(final_steps)
     thought_log = extract_section(jal2_output, "BEHAVIORAL_PATTERNS")
@@ -314,6 +320,7 @@ async def run_answer_pipeline(
     answers: str,
     mcp_options,  # ClaudeAgentOptions
     base_options,  # ClaudeAgentOptions
+    on_log=None,
 ) -> dict:
     """
     Returns {status, output, logs}
@@ -331,6 +338,7 @@ async def run_answer_pipeline(
     shaper_start = time.time()
     shaped_plan = await run_shaper(task, bal_output, jal2_output, base_options)
     _log(logs, "shaper", task, shaped_plan, shaper_start)
+    if on_log: await on_log(logs)
 
     actions = parse_steps(shaped_plan)
     thought_process = extract_section(jal2_output, "THOUGHT_PROCESS") or jal2_output
@@ -346,6 +354,7 @@ async def run_answer_pipeline(
         step_out = result if not isinstance(result, Exception) else f"**Step {i + 1}**\n{actions[i]}"
         _log(logs, f"flush_{i}", actions[i], str(step_out), flush_starts[i])
         final_steps.append(step_out)
+    if on_log: await on_log(logs)
 
     final_plan = "\n\n".join(final_steps)
     thought_log = extract_section(jal2_output, "BEHAVIORAL_PATTERNS")

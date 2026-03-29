@@ -31,10 +31,15 @@ async def mcp_auth(request: Request, call_next):
         if not profile.data:
             print(f"[mcp] 401 unauthorized path={request.url.path}", flush=True)
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
-        _current_user_id.set(profile.data[0]["id"])
-        print(f"[mcp] {request.method} {request.url.path} user={profile.data[0]['id']}", flush=True)
-    response = await call_next(request)
-    return response
+        user_id = profile.data[0]["id"]
+        _current_user_id.set(user_id)
+        is_sse = request.url.path.endswith("/sse")
+        print(f"[mcp] {'SSE connect' if is_sse else request.method} path={request.url.path} user={user_id}", flush=True)
+        response = await call_next(request)
+        if is_sse:
+            print(f"[mcp] SSE disconnect path={request.url.path} user={user_id}", flush=True)
+        return response
+    return await call_next(request)
 
 
 @app.on_event("startup")
@@ -553,8 +558,16 @@ async def nem_start(task: str) -> dict:
 
     row = supabase.table("runs").insert({"user_id": user_id, "task": task}).execute()
     session_id = row.data[0]["id"]
+    print(f"[nem_start] session={session_id} task={task[:100]}", flush=True)
 
-    result = await run_pipeline(task, mcp_options, base_options)
+    async def flush_logs(logs):
+        try:
+            supabase.table("runs").update({"logs": logs}).eq("id", session_id).execute()
+            print(f"[nem_start] flushed {len(logs)} log entries session={session_id}", flush=True)
+        except Exception as e:
+            print(f"[nem_start] log flush failed: {e}", flush=True)
+
+    result = await run_pipeline(task, mcp_options, base_options, on_log=flush_logs)
 
     supabase.table("runs").update({
         "status": result["status"],
@@ -616,7 +629,14 @@ async def nem_answer(session_id: str, answers: str) -> dict:
         allowed_tools=[f"mcp__{n}__*" for n in mcp_servers], permission_mode="bypassPermissions")
     base_options = ClaudeAgentOptions(allowed_tools=[], permission_mode="bypassPermissions")
 
-    result = await run_answer_pipeline(session_data, answers, mcp_options, base_options)
+    async def flush_logs(logs):
+        try:
+            supabase.table("runs").update({"logs": logs}).eq("id", session_id).execute()
+            print(f"[nem_answer] flushed {len(logs)} log entries session={session_id}", flush=True)
+        except Exception as e:
+            print(f"[nem_answer] log flush failed: {e}", flush=True)
+
+    result = await run_answer_pipeline(session_data, answers, mcp_options, base_options, on_log=flush_logs)
 
     supabase.table("runs").update({
         "status": result["status"],
