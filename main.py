@@ -12,6 +12,7 @@ from supabase import create_client
 from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
 from mcp.server.fastmcp import FastMCP
 from pipeline import run_pipeline, run_answer_pipeline
+from contextvars import ContextVar
 
 RAILWAY_PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "localhost")
 mcp = FastMCP("nem", host=RAILWAY_PUBLIC_DOMAIN)
@@ -25,14 +26,14 @@ BASE_URL = f"https://{RAILWAY_URL}"
 @app.middleware("http")
 async def mcp_auth(request: Request, call_next):
     if request.url.path.startswith("/mcp"):
-        auth = request.headers.get("authorization", "")
-        if auth != f"Bearer {NEM_API_KEY}":
+        token = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+        profile = supabase.table("profiles").select("id").eq("mcp_token", token).execute()
+        if not profile.data:
             print(f"[mcp] 401 unauthorized path={request.url.path}", flush=True)
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
-        print(f"[mcp] {request.method} {request.url.path} query={dict(request.query_params)}", flush=True)
+        _current_user_id.set(profile.data[0]["id"])
+        print(f"[mcp] {request.method} {request.url.path} user={profile.data[0]['id']}", flush=True)
     response = await call_next(request)
-    if request.url.path.startswith("/mcp"):
-        print(f"[mcp] response status={response.status_code} path={request.url.path}", flush=True)
     return response
 
 
@@ -106,6 +107,7 @@ app.add_middleware(
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 PROFILE_ID = "f9893af7-ea34-441c-98e5-9672be957423"
+_current_user_id: ContextVar[str] = ContextVar("current_user_id", default=PROFILE_ID)
 NOTION_CLIENT_ID = os.environ["NOTION_CLIENT_ID"]
 NOTION_CLIENT_SECRET = os.environ["NOTION_CLIENT_SECRET"]
 SLACK_CLIENT_ID = os.environ["SLACK_CLIENT_ID"]
@@ -117,13 +119,15 @@ supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 
 class ExchangeRequest(BaseModel):
+    provider: str  # "notion" | "slack" | "google"
     code: str
     redirect_uri: str
+    user_id: str = PROFILE_ID
 
 
 class StoreKeyRequest(BaseModel):
     anthropic_key: str
-    user_id: str = "test-user"
+    user_id: str = PROFILE_ID
 
 
 class RunRequest(BaseModel):
@@ -186,90 +190,48 @@ async def connectors(user_id: str = "test-user"):
 
 @app.post("/exchange")
 async def exchange(req: ExchangeRequest):
-    """Exchange Notion OAuth code for access token, save to Supabase."""
+    """Exchange OAuth code for access token and save to Supabase. provider: notion | slack | google"""
     async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            "https://api.notion.com/v1/oauth/token",
-            auth=(NOTION_CLIENT_ID, NOTION_CLIENT_SECRET),
-            json={
-                "grant_type": "authorization_code",
-                "code": req.code,
-                "redirect_uri": req.redirect_uri,
-            },
-        )
+        if req.provider == "notion":
+            resp = await client.post(
+                "https://api.notion.com/v1/oauth/token",
+                auth=(NOTION_CLIENT_ID, NOTION_CLIENT_SECRET),
+                json={"grant_type": "authorization_code", "code": req.code, "redirect_uri": req.redirect_uri},
+            )
+            if resp.status_code != 200:
+                raise HTTPException(status_code=400, detail=f"Notion token exchange failed: {resp.text}")
+            access_token = resp.json()["access_token"]
 
-    if resp.status_code != 200:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Notion token exchange failed: {resp.text}"
-        )
+        elif req.provider == "slack":
+            resp = await client.post(
+                "https://slack.com/api/oauth.v2.access",
+                data={"client_id": SLACK_CLIENT_ID, "client_secret": SLACK_CLIENT_SECRET,
+                      "code": req.code, "redirect_uri": req.redirect_uri},
+            )
+            data = resp.json()
+            if not data.get("ok"):
+                raise HTTPException(status_code=400, detail=f"Slack token exchange failed: {data.get('error')}")
+            access_token = data["authed_user"]["access_token"]
 
-    access_token = resp.json()["access_token"]
+        elif req.provider == "google":
+            resp = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={"client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET,
+                      "code": req.code, "redirect_uri": req.redirect_uri, "grant_type": "authorization_code"},
+            )
+            data = resp.json()
+            if "refresh_token" not in data:
+                raise HTTPException(status_code=400, detail=f"Google token exchange failed: {data}")
+            access_token = data["refresh_token"]
 
-    supabase.table("connectors").delete().eq("user_id", "test-user").eq("tool_name", "notion").execute()
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown provider: {req.provider}")
+
+    supabase.table("connectors").delete().eq("user_id", req.user_id).eq("tool_name", req.provider).execute()
     supabase.table("connectors").insert({
-        "user_id": "test-user",
-        "tool_name": "notion",
+        "user_id": req.user_id,
+        "tool_name": req.provider,
         "access_token": access_token,
-    }).execute()
-
-    return {"success": True}
-
-
-@app.post("/exchange-slack")
-async def exchange_slack(req: ExchangeRequest):
-    """Exchange Slack OAuth code for user token, save to Supabase."""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            "https://slack.com/api/oauth.v2.access",
-            data={
-                "client_id": SLACK_CLIENT_ID,
-                "client_secret": SLACK_CLIENT_SECRET,
-                "code": req.code,
-                "redirect_uri": req.redirect_uri,
-            },
-        )
-
-    data = resp.json()
-    if not data.get("ok"):
-        raise HTTPException(status_code=400, detail=f"Slack token exchange failed: {data.get('error')}")
-
-    access_token = data["authed_user"]["access_token"]
-
-    supabase.table("connectors").delete().eq("user_id", "test-user").eq("tool_name", "slack").execute()
-    supabase.table("connectors").insert({
-        "user_id": "test-user",
-        "tool_name": "slack",
-        "access_token": access_token,
-    }).execute()
-
-    return {"success": True}
-
-
-@app.post("/exchange-google")
-async def exchange_google(req: ExchangeRequest):
-    """Exchange Google OAuth code for refresh token, save to Supabase."""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            "https://oauth2.googleapis.com/token",
-            data={
-                "client_id": GOOGLE_CLIENT_ID,
-                "client_secret": GOOGLE_CLIENT_SECRET,
-                "code": req.code,
-                "redirect_uri": req.redirect_uri,
-                "grant_type": "authorization_code",
-            },
-        )
-
-    data = resp.json()
-    if "refresh_token" not in data:
-        raise HTTPException(status_code=400, detail=f"Google token exchange failed: {data}")
-
-    supabase.table("connectors").delete().eq("user_id", "test-user").eq("tool_name", "google").execute()
-    supabase.table("connectors").insert({
-        "user_id": "test-user",
-        "tool_name": "google",
-        "access_token": data["refresh_token"],
     }).execute()
 
     return {"success": True}
@@ -476,8 +438,8 @@ async def nem_start(task: str) -> dict:
     on its own line before asking them to respond.
     If status is 'error': surface the message.
     """
-    user_id = PROFILE_ID  # Batch 1: hardcoded; Batch 2: resolved from mcp_token
-    connectors = _get_connectors("test-user")  # connectors table still keyed by "test-user"
+    user_id = _current_user_id.get()
+    connectors = _get_connectors(user_id)
     mcp_servers = _build_mcp_servers(connectors)
     os.environ["ANTHROPIC_API_KEY"] = connectors["anthropic"]
 
@@ -542,7 +504,7 @@ async def nem_answer(session_id: str, answers: str) -> dict:
 
     session_data = row.data[0]["session_data"]
     user_id = row.data[0]["user_id"]
-    connectors = _get_connectors("test-user")  # connectors table still keyed by "test-user"
+    connectors = _get_connectors(user_id)
     mcp_servers = _build_mcp_servers(connectors)
     os.environ["ANTHROPIC_API_KEY"] = connectors["anthropic"]
 
