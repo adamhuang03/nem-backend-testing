@@ -678,3 +678,17 @@ async def nem_review(session_id: str, step_number: int, executed_result: str) ->
 
 
 app.mount("/mcp", mcp.sse_app())
+
+# ---------------------------------------------------------------------------
+# nem_test — streamable HTTP transport for connection durability testing
+# ---------------------------------------------------------------------------
+
+mcp_test = FastMCP("nem_test")
+
+@mcp_test.tool()
+async def nem_test(minutes: float) -> str:
+    """Wait for the given number of minutes then return — tests whether streamable-http holds long-running connections."""
+    await asyncio.sleep(minutes * 60)
+    return f"Connection held for {minutes} minute(s). Streamable HTTP is working."
+
+app.mount("/mcp_test", mcp_test.streamable_http_app())
