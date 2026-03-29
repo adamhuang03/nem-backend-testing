@@ -31,12 +31,14 @@ async def nem_test(minutes: float) -> str:
     return f"Connection held for {minutes} minute(s). Streamable HTTP is working."
 
 mcp_test_app = mcp_test.streamable_http_app()
+mcp_app = mcp.streamable_http_app()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print(f"[startup] host={RAILWAY_PUBLIC_DOMAIN} base_url={BASE_URL} nem_api_key_set={'yes' if NEM_API_KEY != 'nem-test-token' else 'default'}", flush=True)
     async with mcp_test_app.router.lifespan_context(mcp_test_app):
-        yield
+        async with mcp_app.router.lifespan_context(mcp_app):
+            yield
 
 app = FastAPI(lifespan=lifespan)
 
@@ -65,15 +67,12 @@ class MCPAuthMiddleware:
                 return
             user_id = profile.data[0]["id"]
             _current_user_id.set(user_id)
-            is_sse = scope["path"].endswith("/sse")
             method = scope.get("method", "")
             qs = scope.get("query_string", b"").decode()
             session_id = next((p.split("=")[1] for p in qs.split("&") if p.startswith("session_id=")), None)
             sid_str = f" session={session_id}" if session_id else ""
-            print(f"[mcp] {'SSE connect' if is_sse else method} path={scope['path']} user={user_id}{sid_str}", flush=True)
+            print(f"[mcp] {method} path={scope['path']} user={user_id}{sid_str}", flush=True)
             await self.app(scope, receive, send)
-            if is_sse:
-                print(f"[mcp] SSE disconnect path={scope['path']} user={user_id}", flush=True)
             return
         await self.app(scope, receive, send)
 
@@ -691,6 +690,6 @@ async def nem_review(session_id: str, step_number: int, executed_result: str) ->
     return {"status": "not_implemented", "message": "Step review coming soon."}
 
 
-app.mount("/mcp", mcp.sse_app())
+app.mount("/mcp", mcp_app)
 
 app.mount("/mcp_test", mcp_test_app)
