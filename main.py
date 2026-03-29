@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import re
 import json
@@ -13,6 +14,10 @@ from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
 from mcp.server.fastmcp import FastMCP
 from pipeline import run_pipeline, run_answer_pipeline
 from contextvars import ContextVar
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("mcp").setLevel(logging.WARNING)
 
 RAILWAY_PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "localhost")
 mcp = FastMCP("nem", host=RAILWAY_PUBLIC_DOMAIN)
