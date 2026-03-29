@@ -558,7 +558,7 @@ async def run(req: RunRequest):
 
 @mcp.tool()
 async def nem_start(task: str) -> dict:
-    """Run the nem pipeline for a given task. Returns the full plan.
+    """Run nem for a given task. Returns the full plan.
 
     If status is 'complete': show the thought_log. Then scan the plan for live actions
     — steps that write to external systems (sending a Slack message, publishing or
