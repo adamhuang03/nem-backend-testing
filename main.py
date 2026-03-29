@@ -1,9 +1,13 @@
 import asyncio
+import logging
 import os
 import re
 import json
 import httpx
 import anthropic as _anthropic
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("mcp").setLevel(logging.WARNING)
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
