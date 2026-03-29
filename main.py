@@ -49,7 +49,10 @@ class MCPAuthMiddleware:
             _current_user_id.set(user_id)
             is_sse = scope["path"].endswith("/sse")
             method = scope.get("method", "")
-            print(f"[mcp] {'SSE connect' if is_sse else method} path={scope['path']} user={user_id}", flush=True)
+            qs = scope.get("query_string", b"").decode()
+            session_id = next((p.split("=")[1] for p in qs.split("&") if p.startswith("session_id=")), None)
+            sid_str = f" session={session_id}" if session_id else ""
+            print(f"[mcp] {'SSE connect' if is_sse else method} path={scope['path']} user={user_id}{sid_str}", flush=True)
             await self.app(scope, receive, send)
             if is_sse:
                 print(f"[mcp] SSE disconnect path={scope['path']} user={user_id}", flush=True)
