@@ -22,7 +22,7 @@ from contextvars import ContextVar
 RAILWAY_PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "localhost")
 mcp = FastMCP("nem", host=RAILWAY_PUBLIC_DOMAIN)
 
-mcp_test = FastMCP("nem_test")
+mcp_test = FastMCP("nem_test", host=RAILWAY_PUBLIC_DOMAIN)
 
 @mcp_test.tool()
 async def nem_test(minutes: float) -> str:
