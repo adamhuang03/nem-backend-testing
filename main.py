@@ -23,23 +23,34 @@ RAILWAY_URL = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "nem-backend-testing-produ
 BASE_URL = f"https://{RAILWAY_URL}"
 
 
-@app.middleware("http")
-async def mcp_auth(request: Request, call_next):
-    if request.url.path.startswith("/mcp"):
-        token = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
-        profile = supabase.table("profiles").select("id").eq("mcp_token", token).execute()
-        if not profile.data:
-            print(f"[mcp] 401 unauthorized path={request.url.path}", flush=True)
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
-        user_id = profile.data[0]["id"]
-        _current_user_id.set(user_id)
-        is_sse = request.url.path.endswith("/sse")
-        print(f"[mcp] {'SSE connect' if is_sse else request.method} path={request.url.path} user={user_id}", flush=True)
-        response = await call_next(request)
-        if is_sse:
-            print(f"[mcp] SSE disconnect path={request.url.path} user={user_id}", flush=True)
-        return response
-    return await call_next(request)
+class MCPAuthMiddleware:
+    """Raw ASGI middleware — avoids BaseHTTPMiddleware buffering incompatibility with SSE."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket") and scope.get("path", "").startswith("/mcp"):
+            headers = {k: v for k, v in scope.get("headers", [])}
+            token = headers.get(b"authorization", b"").decode().removeprefix("Bearer ").strip()
+            profile = supabase.table("profiles").select("id").eq("mcp_token", token).execute()
+            if not profile.data:
+                print(f"[mcp] 401 unauthorized path={scope['path']}", flush=True)
+                body = b'{"error":"Unauthorized"}'
+                await send({"type": "http.response.start", "status": 401,
+                            "headers": [(b"content-type", b"application/json"),
+                                        (b"content-length", str(len(body)).encode())]})
+                await send({"type": "http.response.body", "body": body})
+                return
+            user_id = profile.data[0]["id"]
+            _current_user_id.set(user_id)
+            is_sse = scope["path"].endswith("/sse")
+            method = scope.get("method", "")
+            print(f"[mcp] {'SSE connect' if is_sse else method} path={scope['path']} user={user_id}", flush=True)
+            await self.app(scope, receive, send)
+            if is_sse:
+                print(f"[mcp] SSE disconnect path={scope['path']} user={user_id}", flush=True)
+            return
+        await self.app(scope, receive, send)
 
 
 @app.on_event("startup")
@@ -206,6 +217,7 @@ async def oauth_google_callback(request: Request):
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url=f"{redirect_uri}?code={mcp_token}&state={original_state}")
 
+app.add_middleware(MCPAuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
